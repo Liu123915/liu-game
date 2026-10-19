@@ -11,27 +11,37 @@
     overflow: hidden;
     font-family: system-ui, sans-serif;
   }
+  /* 容器：包住画布和全部UI，按钮跟着画布走，手机上不再错位 */
+  #gameWrap {
+    position: relative;
+    margin: 0 auto;
+    width: fit-content;
+    height: fit-content;
+    touch-action: none;   /* 阻止页面滚动，保证触屏响应 */
+    user-select: none;
+    -webkit-user-select: none;
+  }
   canvas {
-  display: block;
-  max-width: 100vw;
-  max-height: 100vh;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  margin: auto;
-}
+    display: block;
+    max-width: 100vw;
+    max-height: 100vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+  }
 
   #ui {
-    position: fixed;
+    position: absolute;
     top: 12px;
     left: 12px;
     color: #fff;
     font-size: 20px;
     text-shadow: 2px 2px 4px #000;
     z-index: 10;
+    pointer-events: none;
   }
   #gameOver, #startPanel {
-    position: fixed;
+    position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
@@ -55,25 +65,29 @@
 </head>
 <body>
 
-<div id="ui">
-  分数：<span id="score">0</span> | 血量：<span id="hp">❤️❤️❤️</span>
-</div>
+<div id="gameWrap">
+  <canvas id="game"></canvas>
 
-<div id="startPanel">
-  岩羊攀岩生存
-  <br>
-  <small style="font-size:16px">A/← 左移 &nbsp;&nbsp; D/→ 右移</small>
-  <br>
-  <button id="startBtn">开始游戏</button>
-</div>
+  <div id="ui">
+    分数：<span id="score">0</span> | 血量：<span id="hp">❤️❤️❤️</span>
+  </div>
 
-<div id="gameOver">
-  游戏结束！
-  <br />
-  <button id="restartBtn">重新开始</button>
-</div>
+  <div id="startPanel">
+    岩羊攀岩生存
+    <br>
+    <small style="font-size:16px">A/← 左移 &nbsp;&nbsp; D/→ 右移</small>
+    <br>
+    <small style="font-size:14px">手机：点屏幕左半边/右半边控制</small>
+    <br>
+    <button id="startBtn">开始游戏</button>
+  </div>
 
-<canvas id="game"></canvas>
+  <div id="gameOver">
+    游戏结束！
+    <br />
+    <button id="restartBtn">重新开始</button>
+  </div>
+</div>
 
 <script>
 const canvas = document.getElementById("game");
@@ -130,13 +144,13 @@ function spawnDebris(x, y, color, n){
     });
   }
 }
-function updateDebris(){
+function updateDebris(dt){
   for(let i=debris.length-1;i>=0;i--){
     const d = debris[i];
-    d.x += d.vx;
-    d.y += d.vy;
-    d.vy += 0.12;          // 重力
-    d.life--;
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    d.vy += 0.12 * dt;          // 重力
+    d.life -= dt;
     if(d.life<=0) debris.splice(i,1);
   }
 }
@@ -249,41 +263,52 @@ window.addEventListener("keyup", e => {
   if (e.code === "ArrowLeft" || e.code === "KeyA") keys.left = false;
   if (e.code === "ArrowRight" || e.code === "KeyD") keys.right = false;
 });
-// ==========手机触屏滑动控制【修复版】==========
-let touchStartX = 0;
-let isTouching = false;
+// ==========手机触屏控制【修复版】==========
+// 点屏幕左半边 = 左移，点右半边 = 右移；绑定在 gameWrap 容器上，
+// 阻止默认滚动，按钮跟着画布走，手机上不再错位
+const gameWrap = document.getElementById('gameWrap');
 
-document.addEventListener('touchstart', (e) => {
-  touchStartX = e.touches[0].clientX;
-  isTouching = true;
-});
-
-document.addEventListener('touchmove', (e) => {
-  if (!isTouching) return;
-  const currentX = e.touches[0].clientX;
-  const diff = currentX - touchStartX;
-
-  if (diff > 15) {
-    keys.right = true;
-    keys.left = false;
-  } else if (diff < -15) {
+gameWrap.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const wrapRect = gameWrap.getBoundingClientRect();
+  const x = touch.clientX - wrapRect.left;
+  if (x < wrapRect.width / 2) {
     keys.left = true;
     keys.right = false;
+  } else {
+    keys.right = true;
+    keys.left = false;
   }
-  touchStartX = currentX;
-});
+}, { passive: false });
 
-document.addEventListener('touchend', () => {
-  isTouching = false;
+// 手指在屏幕上滑动时也实时跟随（左半/右半切换）
+gameWrap.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 0) return;
+  const touch = e.touches[0];
+  const wrapRect = gameWrap.getBoundingClientRect();
+  const x = touch.clientX - wrapRect.left;
+  if (x < wrapRect.width / 2) {
+    keys.left = true;
+    keys.right = false;
+  } else {
+    keys.right = true;
+    keys.left = false;
+  }
+}, { passive: false });
+
+gameWrap.addEventListener('touchend', (e) => {
+  e.preventDefault();
   keys.left = false;
   keys.right = false;
-});
+}, { passive: false });
 
-document.addEventListener('touchcancel', () => {
-  isTouching = false;
+gameWrap.addEventListener('touchcancel', (e) => {
+  e.preventDefault();
   keys.left = false;
   keys.right = false;
-});
+}, { passive: false });
 
 startBtn.onclick = ()=>{
     gameStarted = true;
@@ -385,19 +410,21 @@ function resetGame() {
   }
 }
 
-function update() {
+// ========== 固定时间步长：所有速度乘 dt，不受帧率/手机性能影响 ==========
+let lastTime = 0;
+function update(dt) {
   if (gameOver || !gameStarted) return;
-  animTimer += 0.12;
-  timeSec += 0.016;
-  if (hurtTimer > 0) hurtTimer -= 1;
+  animTimer += 0.12 * dt;
+  timeSec += 0.016 * dt;
+  if (hurtTimer > 0) hurtTimer -= dt;
 
   // 左右移动
-  if (keys.left) player.x -= player.speed;
-  if (keys.right) player.x += player.speed;
+  if (keys.left) player.x -= player.speed * dt;
+  if (keys.right) player.x += player.speed * dt;
   player.x = Math.max(player.w/2, Math.min(canvas.width - player.w/2, player.x));
 
   // 岩羊向上攀爬（y 减小 = 向上）
-  player.y -= player.climbSpeed;
+  player.y -= player.climbSpeed * dt;
   camera.y = player.y - 360;
 
   // 生成新岩壁（更高处）
@@ -417,14 +444,14 @@ function update() {
   // 石子生成概率随高度增加（早期宽松，后期密集）
   const heightFactor = Math.min((400 - player.y) / 3000, 1);
   const spawnRate = 0.008 + heightFactor * 0.02;
-  if (Math.random() < spawnRate) createStone();
+  if (Math.random() < spawnRate * dt) createStone();
 
-  // 更新石子
+  // 更新石子（固定速度：每帧位移 × dt，掉帧也不会变慢）
   for (let i = stones.length - 1; i >= 0; i--) {
     const s = stones[i];
-    s.x += (s.targetX - s.x) * 0.025;
-    s.y += s.vy;
-    s.rot += 0.03;
+    s.x += (s.targetX - s.x) * 0.025 * dt;
+    s.y += s.vy * dt;
+    s.rot += 0.03 * dt;
 
     if (rectCircleCollide(player, s)) {
       // 碰撞碎石粒子：飞溅灰色岩屑 + 少量红色碎屑
@@ -450,7 +477,7 @@ function update() {
   }
 
   // 更新碎石粒子
-  updateDebris();
+  updateDebris(dt);
 
   // 拾取草莓加分
   for (let i = foods.length - 1; i >= 0; i--) {
@@ -679,13 +706,20 @@ function draw() {
   ctx.restore();
 }
 
-function loop() {
-  update();
+function loop(timestamp) {
+  // 固定时间步长：以 60fps（≈16.67ms）为基准计算 dt，限制最大 3，
+  // 防止手机掉帧时物体"变慢"或切后台回来瞬间穿越
+  if (lastTime === 0) lastTime = timestamp;
+  let dt = (timestamp - lastTime) / 16.667;
+  lastTime = timestamp;
+  if (dt > 3) dt = 3;
+
+  update(dt);
   draw();
   requestAnimationFrame(loop);
 }
 
-loop();
+loop(0);
 </script>
 
 </body>
