@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>岩羊攀岩生存-增强版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #111;
+    overflow: hidden;
+    font-family: system-ui, sans-serif;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+  }
+  #ui {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    color: #fff;
+    font-size: 20px;
+    text-shadow: 2px 2px 4px #000;
+    z-index: 10;
+  }
+  #gameOver, #startPanel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 32px;
+    text-align: center;
+    z-index: 20;
+    background: rgba(0,0,0,0.7);
+    padding: 30px;
+    border-radius: 12px;
+  }
+  #gameOver { display: none; }
+  #startPanel { display: block; }
+  button {
+    margin-top: 16px;
+    padding: 10px 20px;
+    font-size: 20px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  分数：<span id="score">0</span> | 血量：<span id="hp">❤️❤️❤️</span>
+</div>
+
+<div id="startPanel">
+  岩羊攀岩生存
+  <br>
+  <small style="font-size:16px">A/← 左移 &nbsp;&nbsp; D/→ 右移</small>
+  <br>
+  <button id="startBtn">开始游戏</button>
+</div>
+
+<div id="gameOver">
+  游戏结束！
+  <br />
+  <button id="restartBtn">重新开始</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+canvas.width = 420;
+canvas.height = 720;
+
+const scoreDom = document.getElementById("score");
+const hpDom = document.getElementById("hp");
+const gameOverDom = document.getElementById("gameOver");
+const startPanel = document.getElementById("startPanel");
+const startBtn = document.getElementById("startBtn");
+const restartBtn = document.getElementById("restartBtn");
+
+// ========== 石头精灵图（8帧不同角度，横向排列） ==========
+const rockSprite = new Image();
+rockSprite.src = 'rock_sprite.png';
+const ROCK_FRAME = 512; // 每帧尺寸
+
+// ========== 草莓精灵图（8帧不同角度，横向排列） ==========
+const strawSprite = new Image();
+strawSprite.src = 'strawberry_sprite.png';
+
+// ========== 碰撞碎石粒子 ==========
+let debris = [];
+function spawnDebris(x, y, color, n){
+  for(let i=0;i<n;i++){
+    const ang = Math.random()*Math.PI*2;
+    const spd = 1 + Math.random()*3.2;
+    debris.push({
+      x: x,
+      y: y,
+      vx: Math.cos(ang)*spd,
+      vy: Math.sin(ang)*spd - 2.2,   // 初始略微向上飞
+      life: 28 + Math.random()*18,
+      size: 1.6 + Math.random()*2.6,
+      color: color
+    });
+  }
+}
+function updateDebris(){
+  for(let i=debris.length-1;i>=0;i--){
+    const d = debris[i];
+    d.x += d.vx;
+    d.y += d.vy;
+    d.vy += 0.12;          // 重力
+    d.life--;
+    if(d.life<=0) debris.splice(i,1);
+  }
+}
+function drawDebris(){
+  debris.forEach(d=>{
+    ctx.globalAlpha = Math.max(0, Math.min(1, d.life/18));
+    ctx.fillStyle = d.color;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.size, 0, Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ========== 音频模块（风声+撞击音效） ==========
+let audioCtx;
+let windSource;
+let gameStarted = false;
+
+function initAudio(){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const bufferSize = audioCtx.sampleRate * 2;
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for(let i=0;i<bufferSize;i++){ output[i] = Math.random()*0.4 - 0.2; }
+    windSource = audioCtx.createBufferSource();
+    windSource.buffer = noiseBuffer;
+    windSource.loop = true;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 400;
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.08;
+    windSource.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+    windSource.start();
+}
+
+function playHitSound(){
+    if(!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 180;
+    gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+}
+
+// ========== 游戏全局状态 ==========
+let score = 0;
+let hp = 3;
+let gameOver = false;
+let animTimer = 0;
+let hurtTimer = 0;
+let timeSec = 0; // 用于云朵漂移
+
+// 岩羊玩家（向上攀爬：y 值持续减小）
+const player = {
+  x: canvas.width / 2,
+  y: 400,
+  w: 32,
+  h: 38,
+  speed: 4,
+  climbSpeed: 1.5   // 向上攀爬速度
+};
+
+// 镜头
+const camera = { y: 0 };
+
+const rockWidth = canvas.width;
+const rockHeight = 90;
+let rocks = [];
+let foods = [];
+let stones = [];
+
+// 远景山峰数据（一次生成，保持稳定形状）
+const farMountains = [];
+function buildMountains(){
+  const layers = [
+    { baseY: 470, amp: 120, color: "#a8c4d4" },
+    { baseY: 540, amp: 90,  color: "#8aa8bc" },
+    { baseY: 610, amp: 70,  color: "#6e8ea2" }
+  ];
+  layers.forEach(layer=>{
+    const pts=[];
+    for(let i=0;i<=12;i++){
+      const t = i/12;
+      pts.push({
+        x: t * canvas.width,
+        y: layer.baseY - layer.amp * (0.25 + 0.75 * Math.abs(Math.sin(i*1.73 + layer.baseY)))
+      });
+    }
+    farMountains.push({ color: layer.color, pts: pts, baseY: layer.baseY });
+  });
+}
+buildMountains();
+
+const keys = { left: false, right: false };
+
+window.addEventListener("keydown", e => {
+  if (e.code === "ArrowLeft" || e.code === "KeyA") keys.left = true;
+  if (e.code === "ArrowRight" || e.code === "KeyD") keys.right = true;
+});
+window.addEventListener("keyup", e => {
+  if (e.code === "ArrowLeft" || e.code === "KeyA") keys.left = false;
+  if (e.code === "ArrowRight" || e.code === "KeyD") keys.right = false;
+});
+
+startBtn.onclick = ()=>{
+    gameStarted = true;
+    startPanel.style.display = "none";
+    initAudio();
+    resetGame();
+}
+restartBtn.onclick = resetGame;
+
+// ========== 生成【不规则凹凸岩壁】 ==========
+function createRock(y) {
+  const vertexCount = 6;
+  const points = [];
+  let px = 0;
+  for(let i=0; i<=vertexCount; i++){
+    const offsetY = (Math.random()-0.5)*16;
+    points.push({x: px, y: y + offsetY});
+    px += rockWidth / vertexCount;
+  }
+  rocks.push({
+    points: points,
+    baseY: y,
+    w: rockWidth,
+    h: rockHeight,
+    shade: Math.random(),      // 每块岩壁明暗略有差异
+    cracks: Array.from({length:2},()=>({
+      x: Math.random()*rockWidth,
+      len: 20+Math.random()*35,
+      dir: (Math.random()-0.5)*0.8
+    }))
+  });
+
+  // 随机放草莓（3D草莓精灵图，随机角度帧）
+  if (Math.random() > 0.4) {
+    foods.push({
+      x: 40 + Math.random() * (canvas.width - 80),
+      y: y - 45,
+      r: 15,
+      frame: Math.floor(Math.random() * 8),
+      rot: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+// ========== 生成瞄准岩羊的石子（降低初始速度） ==========
+function createStone(){
+    const heightFactor = Math.min((400 - player.y) / 3000, 1); // 爬得越高越难
+    const baseVy = 0.9 + heightFactor * 0.6;
+    const r = 9 + Math.random() * 10;
+
+    stones.push({
+        x: 60 + Math.random() * (canvas.width - 120),
+        y: camera.y - 60,
+        targetX: player.x,
+        r: r,
+        vy: baseVy + Math.random()*0.2,
+        frame: Math.floor(Math.random() * 8),
+        rot: Math.random() * Math.PI * 2
+    });
+}
+
+// 矩形圆形碰撞检测
+function rectCircleCollide(rect, circle) {
+  const cx = Math.max(rect.x, Math.min(circle.x, rect.x + rect.w));
+  const cy = Math.max(rect.y, Math.min(circle.y, rect.y + rect.h));
+  const dx = circle.x - cx;
+  const dy = circle.y - cy;
+  return dx*dx + dy*dy < circle.r*circle.r;
+}
+
+function updateHPUI() {
+  let str = "";
+  for (let i = 0; i < 3; i++) str += i < hp ? "❤️" : "🖤";
+  hpDom.innerText = str;
+}
+
+function resetGame() {
+  rocks = [];
+  foods = [];
+  stones = [];
+  debris = [];
+
+  player.x = canvas.width / 2;
+  player.y = 400;
+  camera.y = 40;
+
+  score = 0;
+  hp = 3;
+  gameOver = false;
+  hurtTimer = 0;
+  animTimer = 0;
+
+  scoreDom.innerText = score;
+  updateHPUI();
+  gameOverDom.style.display = "none";
+
+  for (let i = 0; i < 10; i++) {
+    createRock(600 + i * rockHeight);
+  }
+}
+
+function update() {
+  if (gameOver || !gameStarted) return;
+  animTimer += 0.12;
+  timeSec += 0.016;
+  if (hurtTimer > 0) hurtTimer -= 1;
+
+  // 左右移动
+  if (keys.left) player.x -= player.speed;
+  if (keys.right) player.x += player.speed;
+  player.x = Math.max(player.w/2, Math.min(canvas.width - player.w/2, player.x));
+
+  // 岩羊向上攀爬（y 减小 = 向上）
+  player.y -= player.climbSpeed;
+  camera.y = player.y - 360;
+
+  // 生成新岩壁（更高处）
+  const topRockY = rocks.length > 0 ? Math.min(...rocks.map(r => r.baseY)) : camera.y;
+  if (topRockY > camera.y - 200) {
+    createRock(topRockY - rockHeight);
+  }
+
+  // 回收屏幕下方岩壁
+  for (let i = rocks.length - 1; i >= 0; i--) {
+    if (rocks[i].baseY > camera.y + canvas.height + 100) rocks.splice(i, 1);
+  }
+  for (let i = foods.length - 1; i >= 0; i--) {
+    if (foods[i].y > camera.y + canvas.height + 100) foods.splice(i, 1);
+  }
+
+  // 石子生成概率随高度增加（早期宽松，后期密集）
+  const heightFactor = Math.min((400 - player.y) / 3000, 1);
+  const spawnRate = 0.008 + heightFactor * 0.02;
+  if (Math.random() < spawnRate) createStone();
+
+  // 更新石子
+  for (let i = stones.length - 1; i >= 0; i--) {
+    const s = stones[i];
+    s.x += (s.targetX - s.x) * 0.025;
+    s.y += s.vy;
+    s.rot += 0.03;
+
+    if (rectCircleCollide(player, s)) {
+      // 碰撞碎石粒子：飞溅灰色岩屑 + 少量红色碎屑
+      spawnDebris(s.x, s.y - 6, "#9a9a9a", 8);
+      spawnDebris(s.x, s.y - 6, "#6b6b6b", 6);
+      spawnDebris(s.x, s.y - 6, "#c24a3a", 3);
+      hp--;
+      hurtTimer = 30;
+      playHitSound();
+      updateHPUI();
+      stones.splice(i, 1);
+      if (hp <= 0) {
+        gameOver = true;
+        gameOverDom.style.display = "block";
+      }
+      continue;
+    }
+    if (s.y > camera.y + canvas.height + 50) {
+      // 石头落出屏幕时也溅起一点碎石
+      spawnDebris(s.x, camera.y + canvas.height - 8, "#8f8f8f", 3);
+      stones.splice(i, 1);
+    }
+  }
+
+  // 更新碎石粒子
+  updateDebris();
+
+  // 拾取草莓加分
+  for (let i = foods.length - 1; i >= 0; i--) {
+    const f = foods[i];
+    const dx = player.x - f.x;
+    const dy = player.y - f.y;
+    if (dx*dx + dy*dy < (f.r + 18)*(f.r + 18)) {
+      score += 5;      // 每个草莓 5 分
+      scoreDom.innerText = score;
+      foods.splice(i, 1);
+    }
+  }
+}
+
+// ========== 背景绘制：天空 + 远景山峰 + 云朵 ==========
+function drawSky(){
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, "#5b8ec4");
+  grad.addColorStop(0.45, "#a5c6de");
+  grad.addColorStop(0.8, "#dce8ec");
+  grad.addColorStop(1, "#eef0ea");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawMountains(){
+  farMountains.forEach(layer=>{
+    ctx.fillStyle = layer.color;
+    ctx.beginPath();
+    ctx.moveTo(0, canvas.height);
+    ctx.lineTo(0, layer.pts[0].y);
+    layer.pts.forEach(p=>ctx.lineTo(p.x, p.y));
+    ctx.lineTo(canvas.width, canvas.height);
+    ctx.closePath();
+    ctx.fill();
+  });
+}
+
+function drawCloud(x, y, s){
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.beginPath();
+  ctx.arc(x, y, 18*s, 0, Math.PI*2);
+  ctx.arc(x+22*s, y+5*s, 14*s, 0, Math.PI*2);
+  ctx.arc(x-20*s, y+5*s, 14*s, 0, Math.PI*2);
+  ctx.arc(x+6*s, y-9*s, 13*s, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawClouds(){
+  const drift = (timeSec * 8) % (canvas.width + 300);
+  drawCloud(150 - drift, 120, 1.0);
+  drawCloud(360 - drift, 190, 0.7);
+  drawCloud(520 - drift, 90, 1.2);
+  drawCloud(700 - drift, 220, 0.55);
+}
+
+// 绘制岩羊，支持受伤闪烁
+function drawGoat(x, y) {
+  ctx.save();
+  if (hurtTimer > 0 && Math.floor(hurtTimer)%2 === 0) ctx.globalAlpha = 0.3;
+  const legSwing = Math.sin(animTimer) * 4;
+
+  ctx.fillStyle = "#8c6a4b";
+  ctx.beginPath();
+  ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y-20, 9, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x-7, y-24);
+  ctx.quadraticCurveTo(x-14, y-34, x-9, y-38);
+  ctx.moveTo(x+7, y-24);
+  ctx.quadraticCurveTo(x+14, y-34, x+9, y-38);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#6b4e36";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x-6, y+10);
+  ctx.lineTo(x-9+legSwing, y+22);
+  ctx.moveTo(x+6, y+10);
+  ctx.lineTo(x+9-legSwing, y+22);
+  ctx.moveTo(x-5, y+8);
+  ctx.lineTo(x-7-legSwing, y+20);
+  ctx.moveTo(x+5, y+8);
+  ctx.lineTo(x+7+legSwing, y+20);
+  ctx.stroke();
+
+  ctx.fillStyle = "#6b4e36";
+  ctx.beginPath();
+  ctx.arc(x+12, y+6, 3, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// 绘制草莓（3D草莓精灵图，随机旋转；未加载时用手绘草莓兜底）
+function drawFruit(f){
+  if (strawSprite.complete && strawSprite.naturalWidth > 0) {
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.rot || 0);
+    const size = f.r * 2.6;
+    ctx.drawImage(strawSprite, f.frame*ROCK_FRAME, 0, ROCK_FRAME, ROCK_FRAME, -size/2, -size/2, size, size);
+    ctx.restore();
+    return;
+  }
+  ctx.save();
+  ctx.fillStyle = "#d93a2b";
+  ctx.beginPath();
+  ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+  ctx.fill();
+  // 高光
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.arc(f.x - f.r*0.3, f.y - f.r*0.35, f.r*0.35, 0, Math.PI*2);
+  ctx.fill();
+  // 绿蒂
+  ctx.fillStyle = "#2e7d32";
+  ctx.beginPath();
+  ctx.moveTo(f.x - f.r*0.7, f.y - f.r*0.5);
+  ctx.lineTo(f.x + f.r*0.7, f.y - f.r*0.5);
+  ctx.lineTo(f.x, f.y - f.r*1.1);
+  ctx.closePath();
+  ctx.fill();
+  // 籽点
+  ctx.fillStyle = "#8a2418";
+  for (let i = 0; i < 4; i++) {
+    const a = 0.6 + i*1.0;
+    const rr = f.r * 0.55;
+    ctx.beginPath();
+    ctx.arc(f.x + Math.cos(a)*rr*0.6, f.y + Math.sin(a)*rr*0.4, 1.2, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// 绘制岩壁（纹理更真实：明暗渐变+裂缝+凸石）
+function drawRock(r){
+  const topY = r.points[0].y;
+
+  // 主体填充（明暗渐变）
+  const grad = ctx.createLinearGradient(0, topY, 0, topY + r.h);
+  const light = 0.45 + r.shade*0.2;
+  grad.addColorStop(0, `rgb(${Math.round(150*light)},${Math.round(140*light)},${Math.round(125*light)})`);
+  grad.addColorStop(1, `rgb(${Math.round(105*light)},${Math.round(96*light)},${Math.round(84*light)})`);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(r.points[0].x, r.points[0].y);
+  for (let p of r.points) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(r.w, r.baseY + r.h);
+  ctx.lineTo(0, r.baseY + r.h);
+  ctx.closePath();
+  ctx.fill();
+
+  // 顶部边缘高光
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(r.points[0].x, r.points[0].y);
+  for (let p of r.points) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+
+  // 裂缝
+  ctx.strokeStyle = "rgba(30,25,18,0.35)";
+  ctx.lineWidth = 1.5;
+  r.cracks.forEach(c=>{
+    ctx.beginPath();
+    ctx.moveTo(c.x, topY + c.len*0.3);
+    ctx.lineTo(c.x + c.len*c.dir, topY + c.len);
+    ctx.lineTo(c.x + c.len*c.dir*0.6, topY + c.len*1.4);
+    ctx.stroke();
+  });
+
+  // 凸起小石块
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  for (let i=0;i<3;i++){
+    const sx = ((r.baseY*7 + i*83) % rockWidth);
+    const sy = topY + 15 + ((r.baseY*13 + i*47) % (r.h-25));
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, 9, 6, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function draw() {
+  // 背景层（不受镜头影响）：天空 + 远景山 + 云
+  drawSky();
+  drawMountains();
+  drawClouds();
+
+  // 游戏层（受镜头影响）：岩壁、草莓、石子、岩羊
+  ctx.save();
+  ctx.translate(0, -camera.y);
+
+  rocks.forEach(r => drawRock(r));
+  foods.forEach(f => drawFruit(f));
+
+  // 石头：用3D渲染的精灵图绘制（不同角度帧 + 旋转 + 阴影）
+  stones.forEach(s => {
+    if (rockSprite.complete && rockSprite.naturalWidth > 0) {
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      ctx.rotate(s.rot);
+      ctx.drawImage(
+        rockSprite,
+        s.frame * ROCK_FRAME, 0, ROCK_FRAME, ROCK_FRAME,
+        -s.r * 1.35, -s.r * 1.35, s.r * 2.7, s.r * 2.7
+      );
+      ctx.restore();
+    } else {
+      // 精灵图还没加载好时的灰色圆形兜底
+      ctx.fillStyle = "#888";
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  });
+
+  drawGoat(player.x, player.y);
+  drawDebris();
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
