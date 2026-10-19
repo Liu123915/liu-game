@@ -12,9 +12,15 @@
     font-family: system-ui, sans-serif;
   }
   canvas {
-    display: block;
-    margin: 0 auto;
-  }
+  display: block;
+  max-width: 100vw;
+  max-height: 100vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: auto;
+}
+
   #ui {
     position: fixed;
     top: 12px;
@@ -74,6 +80,22 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 canvas.width = 420;
 canvas.height = 720;
+// 自适应缩放
+function resizeCanvas() {
+  canvas.style.width = "";
+  canvas.style.height = "";
+  const ratio = canvas.width / canvas.height;
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  let viewRatio = w / h;
+  if (viewRatio > ratio) {
+    canvas.style.height = h + "px";
+  } else {
+    canvas.style.width = w + "px";
+  }
+}
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
 
 const scoreDom = document.getElementById("score");
 const hpDom = document.getElementById("hp");
@@ -226,6 +248,41 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => {
   if (e.code === "ArrowLeft" || e.code === "KeyA") keys.left = false;
   if (e.code === "ArrowRight" || e.code === "KeyD") keys.right = false;
+});
+// ==========手机触屏滑动控制【修复版】==========
+let touchStartX = 0;
+let isTouching = false;
+
+document.addEventListener('touchstart', (e) => {
+  touchStartX = e.touches[0].clientX;
+  isTouching = true;
+});
+
+document.addEventListener('touchmove', (e) => {
+  if (!isTouching) return;
+  const currentX = e.touches[0].clientX;
+  const diff = currentX - touchStartX;
+
+  if (diff > 15) {
+    keys.right = true;
+    keys.left = false;
+  } else if (diff < -15) {
+    keys.left = true;
+    keys.right = false;
+  }
+  touchStartX = currentX;
+});
+
+document.addEventListener('touchend', () => {
+  isTouching = false;
+  keys.left = false;
+  keys.right = false;
+});
+
+document.addEventListener('touchcancel', () => {
+  isTouching = false;
+  keys.left = false;
+  keys.right = false;
 });
 
 startBtn.onclick = ()=>{
