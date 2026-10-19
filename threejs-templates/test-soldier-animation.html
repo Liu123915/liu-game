@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>测试：Soldier 跑步/跳跃动画</title>
+<style>
+  body{margin:0;overflow:hidden;font-family:system-ui;background:#9aa6b5}
+  #info{position:absolute;top:12px;left:50%;transform:translateX(-50%);color:#fff;font-size:18px;z-index:10;background:rgba(0,0,0,.45);padding:10px 18px;border-radius:8px;text-align:center}
+  button{position:absolute;bottom:24px;z-index:10;padding:10px 22px;font-size:16px;border:none;border-radius:8px;cursor:pointer;background:#ffd76a;color:#333;font-weight:bold}
+  #btnRun{left:calc(50% - 130px)}
+  #btnJump{left:calc(50% + 10px)}
+</style>
+</head>
+<body>
+<div id="info">测试页（不动游戏文件）<br>当前动画：<b id="animName">--</b></div>
+<button id="btnRun">跑步动画</button>
+<button id="btnJump">跳跃动画</button>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9aa6b5);
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(6, 7, 14);
+camera.lookAt(0, 3, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+dir.position.set(5, 10, 5);
+scene.add(dir);
+
+// 地面网格方便看动作幅度
+const grid = new THREE.GridHelper(10, 10, 0x888888, 0xcccccc);
+grid.position.y = 0;
+scene.add(grid);
+
+const loader = new GLTFLoader();
+let model, mixer, actions = {};
+const animNameEl = document.getElementById('animName');
+
+// 对比测试：加载项目里自带跑步动画的 Man 模型（姿势由作者制作，一定正常）
+loader.load('./models/Man.glb', (gltf) => {
+  console.log('Man.glb 加载成功，动画列表:', gltf.animations.map(a => a.name));
+  model = gltf.scene;
+  // 与游戏一致的缩放（高度9）
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const scale = 9 / size.y;
+  model.scale.setScalar(scale);
+  // 把模型脚底放地面（y=0）
+  const b2 = new THREE.Box3().setFromObject(model);
+  model.position.y -= b2.min.y;
+  scene.add(model);
+  mixer = new THREE.AnimationMixer(model);
+  gltf.animations.forEach((clip) => {
+    const action = mixer.clipAction(clip);
+    actions[clip.name] = action;
+  });
+  // 默认播放跑步动画（名字含 Run）
+  const runClip = gltf.animations.find(c => /run/i.test(c.name)) || gltf.animations[0];
+  actions[runClip.name].play();
+  animNameEl.textContent = runClip.name;
+}, undefined, (e) => {
+  console.error('加载失败:', e);
+  animNameEl.textContent = '加载失败，请检查路径';
+});
+
+document.getElementById('btnRun').addEventListener('click', () => {
+  Object.values(actions).forEach(a => a.stop());
+  const clip = Object.keys(actions).find(n => /run/i.test(n));
+  if (clip) { actions[clip].play(); animNameEl.textContent = clip; }
+});
+document.getElementById('btnJump').addEventListener('click', () => {
+  Object.values(actions).forEach(a => a.stop());
+  const clip = Object.keys(actions).find(n => /jump/i.test(n));
+  if (clip) { actions[clip].reset().play(); animNameEl.textContent = clip; }
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  if (mixer) mixer.update(delta);
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

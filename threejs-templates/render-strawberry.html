@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>渲染草莓GLB为PNG</title>
+<style>
+  body { background:#222; color:#eee; font-family:monospace; padding:20px; }
+  #status { margin-bottom:12px; }
+  img { image-rendering: pixelated; border:1px solid #666; margin:4px; }
+</style>
+</head>
+<body>
+<div id="status">加载中...</div>
+<div id="out"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const status = document.getElementById('status');
+const out = document.getElementById('out');
+const loader = new GLTFLoader();
+
+const SIZE = 512;
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(SIZE, SIZE);
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+
+// 灯光：主光 + 补光 + 环境光，突出草莓红润感
+const dir = new THREE.DirectionalLight(0xffffff, 1.3);
+dir.position.set(3, 6, 4);
+scene.add(dir);
+const fill = new THREE.DirectionalLight(0xffd8e0, 0.7);
+fill.position.set(-4, 2, -3);
+scene.add(fill);
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+loader.load('./models/strawberry.glb', (gltf) => {
+  const model = gltf.scene;
+  scene.add(model);
+
+  // 计算包围盒，让相机刚好框住模型
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const dist = maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.15;
+
+  // 模型居中
+  model.position.sub(center);
+
+  // 多角度渲染：8个方向各一帧
+  let frame = 0;
+  const total = 8;
+  const images = [];
+
+  function renderOne() {
+    const ang = (frame / total) * Math.PI * 2;
+    camera.position.set(Math.sin(ang) * dist, dist * 0.5, Math.cos(ang) * dist);
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
+    images.push(renderer.domElement.toDataURL('image/png'));
+    frame++;
+    if (frame < total) {
+      status.textContent = `渲染 ${frame}/${total} ...`;
+      requestAnimationFrame(renderOne);
+    } else {
+      status.textContent = '完成！8帧已渲染';
+      images.forEach((url, i) => {
+        const img = document.createElement('img');
+        img.src = url;
+        img.width = 128;
+        out.appendChild(img);
+      });
+      buildSprite(images);
+    }
+  }
+  renderOne();
+
+  function buildSprite(frames) {
+    const c = document.createElement('canvas');
+    c.width = SIZE * frames.length;
+    c.height = SIZE;
+    const cx = c.getContext('2d');
+    frames.forEach((url, i) => {
+      const im = new Image();
+      im.onload = () => {
+        cx.drawImage(im, i * SIZE, 0, SIZE, SIZE);
+        if (i === frames.length - 1) {
+          const spriteUrl = c.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = spriteUrl;
+          a.download = 'strawberry_sprite.png';
+          a.textContent = '下载精灵图 strawberry_sprite.png';
+          a.style.cssText = 'display:inline-block;margin-top:10px;color:#ffd93d;';
+          document.body.appendChild(a);
+          status.textContent = '完成！可点击下载精灵图';
+        }
+      };
+      im.src = url;
+    });
+  }
+}, (xhr) => {
+  if (xhr.total) status.textContent = `加载中 ${Math.round(xhr.loaded / xhr.total * 100)}%`;
+}, (err) => {
+  status.textContent = '加载失败: ' + err.message;
+  console.error(err);
+});
+</script>
+</body>
+</html>

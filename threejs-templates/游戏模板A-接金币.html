@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>游戏模板A · 接金币</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0e1220; font-family: "Microsoft YaHei", sans-serif; }
+  #ui {
+    position: fixed; top: 16px; left: 20px; color: #fff; font-size: 22px; font-weight: bold;
+    text-shadow: 0 2px 6px rgba(0,0,0,.6); user-select: none;
+  }
+  #ui span { color: #ffd93d; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: rgba(10,12,25,.78); color: #fff; text-align: center;
+  }
+  #overlay h1 { font-size: 46px; letter-spacing: 4px; }
+  #overlay p { font-size: 16px; color: #aab; line-height: 1.8; }
+  #overlay button {
+    font-size: 20px; padding: 10px 40px; border: none; border-radius: 999px;
+    background: #ffd93d; color: #333; cursor: pointer; margin-top: 10px;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="ui">分数 <span id="score">0</span> ｜ 命 <span id="lives">3</span></div>
+
+<div id="overlay">
+  <h1 id="title">接 金 币</h1>
+  <p id="subtitle">← → 或 A D 移动篮子，也可以动鼠标<br/>金币 +1 分 ｜ 炸弹 -1 命，3 命用完游戏结束</p>
+  <button id="startBtn">开始游戏</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   改皮入口（想改成你的游戏，先从这里动手！）
+   ============================================================ */
+const SETTINGS = {
+  玩家颜色: 0x4ecdc4,
+  好东西颜色: 0xffd93d,   // 金币
+  坏东西颜色: 0xff4d4f,   // 炸弹
+  坏东西概率: 0.25,       // 0~1 之间，越大越难
+  基础下落速度: 4,        // 越大越快
+  玩家移动速度: 12,
+  初始命数: 3,
+};
+
+/* ============【A 三件套】舞台：照抄不变 ============ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1220);
+scene.fog = new THREE.Fog(0x0e1220, 18, 45);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 2, 14);
+camera.lookAt(0, -1, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// 灯光 + 地面网格
+scene.add(new THREE.AmbientLight(0x8899bb, 0.8));
+const key = new THREE.DirectionalLight(0xffffff, 2);
+key.position.set(5, 10, 6);
+scene.add(key);
+scene.add(new THREE.GridHelper(40, 40, 0x2a3150, 0x1c2240));
+
+/* ============【E 界面】记分牌：直接用网页文字，最简单 ============ */
+const scoreEl = document.getElementById('score');
+const livesEl = document.getElementById('lives');
+const overlay = document.getElementById('overlay');
+const titleEl = document.getElementById('title');
+const subtitleEl = document.getElementById('subtitle');
+const startBtn = document.getElementById('startBtn');
+
+let score = 0;
+let lives = SETTINGS.初始命数;
+
+function updateUI() {
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+}
+
+/* ============【B 玩家】主角：篮子 ============ */
+const player = new THREE.Mesh(
+  new THREE.BoxGeometry(2.6, 0.6, 1.4),
+  new THREE.MeshStandardMaterial({ color: SETTINGS.玩家颜色, metalness: 0.3, roughness: 0.3 })
+);
+player.position.set(0, -3.5, 0);
+scene.add(player);
+
+let targetX = 0;   // 篮子想去的位置（键盘按住就动，鼠标就跟随）
+
+/* ============【C 物品生成】刷怪的：金币和炸弹 ============ */
+const items = [];              // 正在下落的所有物体（点餐小票）
+const COIN = 'coin', BOMB = 'bomb';
+
+function spawn() {
+  // 掷骰子：坏东西概率是几分之几
+  const isBomb = Math.random() < SETTINGS.坏东西概率;
+
+  let mesh;
+  if (isBomb) {
+    mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 20, 20),
+      new THREE.MeshStandardMaterial({ color: SETTINGS.坏东西颜色 })
+    );
+  } else {
+    mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.5, 0.14, 24),
+      new THREE.MeshStandardMaterial({
+        color: SETTINGS.好东西颜色, metalness: 0.6, roughness: 0.3
+      })
+    );
+    mesh.rotation.x = Math.PI / 2;   // 让硬币的"脸"朝着我们
+  }
+
+  // 随机出生位置 + 各自的速度（分数越高掉得越快）
+  mesh.position.set((Math.random() - 0.5) * 13, 8, 0);
+  mesh.userData = {
+    type: isBomb ? BOMB : COIN,
+    speed: SETTINGS.基础下落速度 + Math.random() * 3 + score * 0.06,
+  };
+
+  scene.add(mesh);
+  items.push(mesh);
+}
+
+/* ============【D 规则裁判】碰撞 + 分数 + 命 ============ */
+// 碰撞检测：两个物体 x、y 距离都够近，就算撞上（盒子套盒子）
+function hits(a, b) {
+  return Math.abs(a.position.x - b.position.x) < 1.9 &&
+         Math.abs(a.position.y - b.position.y) < 1.0;
+}
+
+/* ============【输入】耳朵：键盘 + 鼠标 ============ */
+const keys = {};
+addEventListener('keydown', e => keys[e.key] = true);
+addEventListener('keyup',   e => keys[e.key] = false);
+
+addEventListener('mousemove', e => {
+  // 屏幕宽度(0~1920) 换算成场景宽度(-7~7)
+  targetX = (e.clientX / innerWidth - 0.5) * 14;
+});
+
+/* ============【F 游戏循环】导演：每帧喊一次 Action! ============ */
+let playing = false;
+const clock = new THREE.Clock();   // 秒表
+let spawnTimer = 0;
+
+function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), 0.05);   // 这帧用了几秒（封顶防切屏跳变）
+
+  if (playing) {
+    // ① 读输入
+    if (keys['ArrowLeft']  || keys['a']) targetX -= SETTINGS.玩家移动速度 * dt;
+    if (keys['ArrowRight'] || keys['d']) targetX += SETTINGS.玩家移动速度 * dt;
+    targetX = Math.max(-7, Math.min(7, targetX));            // 别跑出画面
+    player.position.x += (targetX - player.position.x) * 0.25; // 平滑滑过去
+
+    // ② 定时刷怪（分数越高刷得越勤）
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawn();
+      spawnTimer = Math.max(0.35, 1.05 - score * 0.012);
+    }
+
+    // ③ 更新每个物品 + 查规则（倒着删才不会漏）
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      it.position.y -= it.userData.speed * dt;   // 按秒下落，任何电脑速度一样
+      it.rotation.y += 3 * dt;
+
+      if (it.position.y < -4.6) {
+        // 掉出屏幕：金币漏接不扣分（想更狠？在这里扣！）
+        scene.remove(it);
+        items.splice(i, 1);
+        continue;
+      }
+
+      if (hits(it, player)) {
+        if (it.userData.type === COIN) {
+          score++;
+        } else {
+          lives--;
+          if (lives <= 0) endGame();
+        }
+        updateUI();
+        scene.remove(it);      // 消失两件套之一：撤下舞台
+        items.splice(i, 1);    // 之二：小票上划掉
+      }
+    }
+  }
+
+  // ④ 拍下这一帧（不管玩没玩都在拍，开始画面才有背景）
+  renderer.render(scene, camera);
+}
+loop();
+
+/* ============【开始 / 结束】 ============ */
+startBtn.addEventListener('click', () => {
+  overlay.classList.add('hidden');
+  resetGame();
+  playing = true;
+});
+
+function resetGame() {
+  items.forEach(it => scene.remove(it));
+  items.length = 0;
+  score = 0;
+  lives = SETTINGS.初始命数;
+  spawnTimer = 0;
+  updateUI();
+}
+
+function endGame() {
+  playing = false;
+  titleEl.textContent = '游戏结束';
+  subtitleEl.innerHTML = `最终得分：<b style="color:#ffd93d;font-size:26px;">${score}</b><br/>想破纪录？改改 SETTINGS 里的参数练练手`;
+  startBtn.textContent = '再来一次';
+  overlay.classList.remove('hidden');
+}
+
+/* ============【固定写法】窗口缩放同步 ============ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

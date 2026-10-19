@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>落石躲避生存</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0e1220; font-family: "Microsoft YaHei", sans-serif; }
+
+  /* 顶部 HUD */
+  #ui {
+    position: fixed; top: 16px; left: 20px; color: #fff; font-size: 22px; font-weight: bold;
+    text-shadow: 0 2px 6px rgba(0,0,0,.6); user-select: none; z-index: 5;
+  }
+  #ui .label { color: #9ab; }
+  #score { color: #ffd93d; }
+  #hp { letter-spacing: 2px; color: #ff5f6d; }
+
+  /* 开场 / 结束 弹层 */
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: rgba(10,12,25,.82); color: #fff; text-align: center; z-index: 10;
+  }
+  #overlay h1 { font-size: 48px; letter-spacing: 6px; color: #ffd93d; }
+  #overlay h2 { font-size: 40px; letter-spacing: 4px; color: #ff5f6d; }
+  #overlay p { font-size: 16px; color: #aab; line-height: 1.9; }
+  #overlay p b { color: #ffd93d; }
+  #overlay button {
+    font-size: 20px; padding: 10px 44px; border: none; border-radius: 999px;
+    background: #ffd93d; color: #333; cursor: pointer; margin-top: 10px; font-weight: bold;
+  }
+  #overlay button:hover { background: #ffe271; }
+  .hidden { display: none !important; }
+
+  /* 掉血红色闪光层 */
+  #flash {
+    position: fixed; inset: 0; background: rgba(255,40,40,0.0); pointer-events: none; z-index: 4;
+    transition: background 0.15s;
+  }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <span class="label">分数</span> <span id="score">0</span>
+  <span class="label">｜ 血量</span> <span id="hp">❤❤❤</span>
+</div>
+
+<div id="flash"></div>
+
+<div id="overlay">
+  <h1 id="title">落石躲避生存</h1>
+  <p>
+    移动鼠标控制蓝色小球移动<br/>
+    躲避从天而降的 <b>石头</b>（碰到扣 1 血，共 3 血）<br/>
+    接住 <b>金色食物</b> 加分<br/>
+    石头会 <b>越来越快、越来越多</b>，看你能活多久！
+  </p>
+  <button id="startBtn">开始游戏</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ===================== 场景 / 相机 / 渲染器 ===================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1220);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(0, 22, 14);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+/* ===================== 灯光 ===================== */
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(8, 20, 6);
+dirLight.castShadow = true;
+scene.add(dirLight);
+scene.add(new THREE.AmbientLight(0x8899bb, 0.6));
+// 补一盏底光让物体下侧不黑
+scene.add(new THREE.PointLight(0x88aaff, 0.4, 60).translateY(6));
+
+/* ===================== 地面（活动场地） ===================== */
+const FIELD = 26; // 场地边长
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(FIELD, FIELD),
+  new THREE.MeshStandardMaterial({ color: 0x2a3547, roughness: 0.9 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// 场地边界线（视觉提示活动范围）
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x5566ff });
+const edgePoints = [
+  new THREE.Vector3(-FIELD/2, 0.02, -FIELD/2),
+  new THREE.Vector3( FIELD/2, 0.02, -FIELD/2),
+  new THREE.Vector3( FIELD/2, 0.02,  FIELD/2),
+  new THREE.Vector3(-FIELD/2, 0.02,  FIELD/2),
+  new THREE.Vector3(-FIELD/2, 0.02, -FIELD/2),
+];
+const edgeLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints(edgePoints), edgeMat
+);
+scene.add(edgeLine);
+
+/* ===================== 玩家 ===================== */
+const PLAYER_R = 0.55;
+const player = new THREE.Mesh(
+  new THREE.SphereGeometry(PLAYER_R, 24, 24),
+  new THREE.MeshStandardMaterial({ color: 0x4ecdc4, emissive: 0x1f9d8a, emissiveIntensity: 0.35 })
+);
+player.position.set(0, PLAYER_R, 0);
+player.castShadow = true;
+scene.add(player);
+
+// 鼠标控制：把鼠标位置投射到地面
+const mouse = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const targetPos = new THREE.Vector3();
+
+window.addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  raycaster.ray.intersectPlane(groundPlane, targetPos);
+});
+
+/* ===================== 游戏状态 ===================== */
+const SETTINGS = {
+  初始血量: 3,
+  石头初始速度: 0.06,   // 每帧下落距离
+  石头速度上限: 0.24,
+  石头加速: 0.0008,     // 每生成一波加速
+  初始生成间隔: 95,     // 帧数
+  最小生成间隔: 24,
+  间隔缩短: 0.55,
+  食物加分: 10,
+  食物概率: 0.35,
+};
+
+let hp = SETTINGS.初始血量;
+let score = 0;
+let gameOver = false;
+let started = false;
+let spawnTimer = 0;
+let dropSpeed = SETTINGS.石头初始速度;
+let spawnInterval = SETTINGS.初始生成间隔;
+
+const rocks = [];    // 落石数组
+const foods = [];    // 食物数组
+
+// 生成石头（用十二面体，更像岩石）
+const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+function createRock() {
+  const scale = 0.5 + Math.random() * 0.6; // 大小 0.5~1.1
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x8a93a5,
+    roughness: 0.85,
+    flatShading: true,
+  });
+  const rock = new THREE.Mesh(rockGeo, mat);
+  rock.scale.setScalar(scale);
+  rock.position.set(
+    (Math.random() - 0.5) * (FIELD - 2),
+    16,
+    (Math.random() - 0.5) * (FIELD - 2)
+  );
+  rock.castShadow = true;
+  rock.userData.radius = scale * 0.75;
+  rock.userData.spin = (Math.random() - 0.5) * 0.1; // 旋转速度
+  scene.add(rock);
+  rocks.push(rock);
+}
+
+// 生成食物（金色发光小球）
+function createFood() {
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffd93d,
+    emissive: 0xffb400,
+    emissiveIntensity: 0.6,
+  });
+  const food = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 16), mat);
+  food.position.set(
+    (Math.random() - 0.5) * (FIELD - 2),
+    16,
+    (Math.random() - 0.5) * (FIELD - 2)
+  );
+  food.userData.radius = 0.35;
+  scene.add(food);
+  foods.push(food);
+}
+
+// 球体碰撞检测：两球心距离 < 半径之和
+function hit(a, b) {
+  return a.position.distanceTo(b.position) < a.userData.radius + b.userData.radius;
+}
+
+/* ===================== UI ===================== */
+const scoreDom = document.getElementById('score');
+const hpDom = document.getElementById('hp');
+const overlayDom = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+const flashDom = document.getElementById('flash');
+const titleDom = document.getElementById('title');
+
+function updateHPUI() {
+  let s = '';
+  for (let i = 0; i < SETTINGS.初始血量; i++) s += i < hp ? '❤' : '🖤';
+  hpDom.innerText = s;
+}
+
+function flashRed() {
+  flashDom.style.background = 'rgba(255,40,40,0.35)';
+  setTimeout(() => { flashDom.style.background = 'rgba(255,40,40,0.0)'; }, 180);
+}
+
+/* ===================== 开始 / 重置 ===================== */
+function startGame() {
+  // 清理场上残留物体
+  rocks.forEach(r => scene.remove(r));
+  foods.forEach(f => scene.remove(f));
+  rocks.length = 0;
+  foods.length = 0;
+
+  hp = SETTINGS.初始血量;
+  score = 0;
+  gameOver = false;
+  started = true;
+  spawnTimer = 0;
+  dropSpeed = SETTINGS.石头初始速度;
+  spawnInterval = SETTINGS.初始生成间隔;
+  player.position.set(0, PLAYER_R, 0);
+
+  scoreDom.innerText = score;
+  updateHPUI();
+  overlayDom.classList.add('hidden');
+}
+
+function endGame() {
+  gameOver = true;
+  titleDom.innerText = '游戏结束';
+  document.querySelector('#overlay p').innerHTML =
+    '最终分数 <b>' + score + '</b><br/>石头越来越快，你能活多久？';
+  startBtn.innerText = '再来一局';
+  overlayDom.classList.remove('hidden');
+}
+
+startBtn.onclick = startGame;
+
+/* ===================== 主动画循环 ===================== */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  if (started && !gameOver) {
+    // 1) 玩家平滑跟随鼠标（限制在场地内）
+    const half = FIELD / 2 - 0.6;
+    const nx = THREE.MathUtils.clamp(targetPos.x, -half, half);
+    const nz = THREE.MathUtils.clamp(targetPos.z, -half, half);
+    player.position.x += (nx - player.position.x) * Math.min(1, 0.09 * dt * 60);
+    player.position.z += (nz - player.position.z) * Math.min(1, 0.09 * dt * 60);
+    player.position.y = PLAYER_R;
+
+    // 2) 生成：石头 / 食物（伴随概率）
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+      spawnTimer = 0;
+      createRock();
+      if (Math.random() < SETTINGS.食物概率) createFood();
+
+      // 难度递增：更快 + 更密（带上下限）
+      if (dropSpeed < SETTINGS.石头速度上限) dropSpeed += SETTINGS.石头加速;
+      if (spawnInterval > SETTINGS.最小生成间隔) spawnInterval -= SETTINGS.间隔缩短;
+    }
+
+    // 3) 石头：下落 + 旋转 + 碰撞
+    for (let i = rocks.length - 1; i >= 0; i--) {
+      const r = rocks[i];
+      r.position.y -= dropSpeed;
+      r.rotation.x += r.userData.spin;
+      r.rotation.z += r.userData.spin * 0.7;
+
+      if (hit(player, r)) {
+        // 掉血
+        hp--;
+        updateHPUI();
+        flashRed();
+        scene.remove(r);
+        rocks.splice(i, 1);
+        if (hp <= 0) { endGame(); }
+        continue;
+      }
+      if (r.position.y < 0) { // 落地消失
+        scene.remove(r);
+        rocks.splice(i, 1);
+      }
+    }
+
+    // 4) 食物：下落 + 旋转 + 拾取
+    for (let i = foods.length - 1; i >= 0; i--) {
+      const f = foods[i];
+      f.position.y -= dropSpeed;
+      f.rotation.y += 0.06;
+
+      if (hit(player, f)) {
+        score += SETTINGS.食物加分;
+        scoreDom.innerText = score;
+        scene.remove(f);
+        foods.splice(i, 1);
+        continue;
+      }
+      if (f.position.y < 0) {
+        scene.remove(f);
+        foods.splice(i, 1);
+      }
+    }
+  }
+
+  // 玩家小球轻轻上下浮动，看起来更活
+  if (started && !gameOver) {
+    player.position.y = PLAYER_R + Math.sin(performance.now() * 0.004) * 0.08;
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ===================== 窗口自适应 ===================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+updateHPUI();
+animate();
+</script>
+</body>
+</html>

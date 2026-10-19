@@ -1,0 +1,163 @@
+// 场景、相机、渲染器
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// 灯光
+const light = new THREE.DirectionalLight(0xffffff,1);
+light.position.set(10,20,10);
+scene.add(light);
+scene.add(new THREE.AmbientLight(0x404040));
+
+// 跑道地面
+const groundGeo = new THREE.PlaneGeometry(20,200);
+const groundMat = new THREE.MeshLambertMaterial({color:0x333333});
+const ground = new THREE.Mesh(groundGeo,groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.z = -80;
+scene.add(ground);
+
+// 玩家方块
+const playerGeo = new THREE.BoxGeometry(2,2,2);
+const playerMat = new THREE.MeshLambertMaterial({color:0x4488ff});
+const player = new THREE.Mesh(playerGeo,playerMat);
+player.position.set(0,1,0);
+scene.add(player);
+
+// 物理&控制参数
+let velY = 0;
+const gravity = -0.015;
+let isJump = false;
+let speed = 0.3;
+let frameCount = 0;
+let score = 0;
+const scoreDom = document.getElementById("scoreText");
+const moveSpeed = 0.25;
+const keys = {a:false, d:false};
+
+// 数组：炸弹 + 钻石
+let bombs = [];
+let diamonds = [];
+
+// 创建炸弹（红色，碰到失败）
+function createBomb(){
+  const obsGeo = new THREE.BoxGeometry(3,3,3);
+  const obsMat = new THREE.MeshLambertMaterial({color:0xff3333});
+  const bomb = new THREE.Mesh(obsGeo,obsMat);
+  const lane = [-6,0,6];
+  bomb.position.set(lane[Math.floor(Math.random()*3)],1.5,-120);
+  scene.add(bomb);
+  bombs.push(bomb);
+}
+
+// 创建钻石（青色菱形，碰到加分）
+function createDiamond(){
+  const diaGeo = new THREE.OctahedronGeometry(1.6);
+  const diaMat = new THREE.MeshLambertMaterial({color:0x33ffff});
+  const diamond = new THREE.Mesh(diaGeo,diaMat);
+  const lane = [-6,0,6];
+  diamond.position.set(lane[Math.floor(Math.random()*3)],1.5,-120);
+  scene.add(diamond);
+  diamonds.push(diamond);
+}
+
+// 键盘监听
+window.addEventListener('keydown',(e)=>{
+  if(e.code==='Space' && !isJump){
+    velY = 0.4;
+    isJump = true;
+  }
+  if(e.code === 'KeyA') keys.a = true;
+  if(e.code === 'KeyD') keys.d = true;
+})
+window.addEventListener('keyup',(e)=>{
+  if(e.code === 'KeyA') keys.a = false;
+  if(e.code === 'KeyD') keys.d = false;
+})
+
+camera.position.set(0,8,12);
+
+// 循环渲染
+function animate(){
+  requestAnimationFrame(animate);
+  frameCount++;
+
+  // 难度随时间加速
+  if(frameCount%600===0) speed += 0.03;
+
+  // 左右移动控制，限制跑道边界
+  if(keys.a && player.position.x > -8){
+    player.position.x -= moveSpeed;
+  }
+  if(keys.d && player.position.x < 8){
+    player.position.x += moveSpeed;
+  }
+
+  // 跳跃重力
+  if(isJump){
+    velY += gravity;
+    player.position.y += velY;
+    if(player.position.y <=1){
+      player.position.y = 1;
+      isJump = false;
+      velY =0;
+    }
+  }
+
+  // =========炸弹逻辑=========
+  bombs.forEach((bomb,index)=>{
+    bomb.position.z += speed;
+    const dist = player.position.distanceTo(bomb.position);
+    if(dist <3.2){
+      alert("💥碰到炸弹！游戏结束！得分："+score);
+      location.reload();
+    }
+    if(bomb.position.z>15){
+      scene.remove(bomb);
+      bombs.splice(index,1);
+    }
+  })
+
+  // =========钻石逻辑，碰到加分=========
+  diamonds.forEach((dia,index)=>{
+    dia.position.z += speed;
+    // 钻石缓慢旋转更好看
+    dia.rotation.y +=0.05;
+    const dist = player.position.distanceTo(dia.position);
+    if(dist <2.8){
+      // 拾取钻石，+10分
+      score +=10;
+      scoreDom.innerText = "得分："+score;
+      scene.remove(dia);
+      diamonds.splice(index,1);
+    }
+    if(dia.position.z>15){
+      scene.remove(dia);
+      diamonds.splice(index,1);
+    }
+  })
+
+  // 随机生成：炸弹 or 钻石
+  if(frameCount%120 ===0){
+    const rand = Math.random();
+    if(rand>0.4){
+      createBomb();
+    }else{
+      createDiamond();
+    }
+  }
+
+  // 相机跟随玩家
+  camera.position.x = player.position.x;
+  camera.lookAt(player.position);
+  renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+})

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>落石躲避生存</title>
+<style>
+*{margin:0;padding:0}
+body{overflow:hidden;font-family:system-ui}
+#ui{
+    position:fixed;top:16px;left:16px;color:white;font-size:22px;
+    text-shadow: 1px 1px 4px #000;
+    z-index:10;
+}
+#gameOver{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    color:#ff4444;font-size:40px;text-shadow:0 0 10px black;
+    display:none;text-align:center;
+}
+#restartBtn{margin-top:20px;padding:8px 16px;font-size:20px;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="ui">
+    分数：<span id="score">0</span> | 血量：<span id="hp">❤️❤️❤️</span>
+</div>
+<div id="gameOver">
+    游戏结束！<br>
+    <button id="restartBtn">重新开始</button>
+</div>
+
+<script type="module" src="./game.js"></script>
+</body>
+</html>
